@@ -9,7 +9,7 @@ export interface ChatDefaults {
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatDefaults = {
-	provider: "openai-codex",
-	model: "gpt-5.3-codex-spark",
+	provider: "zai",
+	model: "glm-4.5",
 	reasoningEffort: "medium",
 };

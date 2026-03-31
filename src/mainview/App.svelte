@@ -1,14 +1,14 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { Electroview } from "electrobun/view";
-	import {
-		AppStorage,
-		ChatPanel,
-		CustomProvidersStore,
-		IndexedDBStorageBackend,
-		ProviderKeysStore,
-		SessionsStore,
-		SettingsStore,
+import {
+	AppStorage,
+	ChatPanel,
+	CustomProvidersStore,
+	IndexedDBStorageBackend,
+	ProviderKeysStore,
+	SessionsStore,
+	SettingsStore,
 		defaultConvertToLlm,
 		setAppStorage,
 	} from "@mariozechner/pi-web-ui";
