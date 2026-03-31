@@ -1,12 +1,47 @@
 import { expect, type Page, chromium, test } from "@playwright/test";
+import { existsSync, readFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import * as net from "node:net";
 
 const CDP_PORT = Number(process.env.ELECTROBUN_E2E_CDP_PORT ?? "9333");
-const E2E_MESSAGE = "E2E mocked response from fixture mode.";
+const E2E_ENV_FILES = [".env.e2e.local", ".env.e2e", ".env.local", ".env"];
 let appProcess: ChildProcess | null = null;
 let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | null = null;
 let page: Page | null = null;
+
+function loadProcessEnvFromFiles() {
+	for (const file of E2E_ENV_FILES) {
+		if (!existsSync(file)) continue;
+
+		const content = readFileSync(file, "utf8");
+		for (const rawLine of content.split(/\r?\n/)) {
+			const line = rawLine.trim();
+			if (!line || line.startsWith("#")) continue;
+
+			const equalsIndex = line.indexOf("=");
+			if (equalsIndex < 0) continue;
+
+			const key = line.slice(0, equalsIndex).trim();
+			if (!key || process.env[key] !== undefined) continue;
+
+			let value = line.slice(equalsIndex + 1).trim();
+			if (
+				(value.startsWith('"') && value.endsWith('"')) ||
+				(value.startsWith("'") && value.endsWith("'"))
+			) {
+				value = value.slice(1, -1);
+			}
+
+			if (value) {
+				process.env[key] = value;
+			}
+		}
+	}
+}
+
+loadProcessEnvFromFiles();
+
+test.skip(!process.env.ZAI_API_KEY, "ZAI_API_KEY is required to run the live e2e chat test.");
 
 function waitForSocket(port: number, timeoutMs: number): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -87,7 +122,7 @@ test.afterAll(async () => {
 	if (appProcess) appProcess.kill("SIGINT");
 });
 
-test("sends a message and receives a mocked response", async () => {
+test("sends a message and receives a live response", async () => {
 	const messageInput = page!.locator("textarea[placeholder='Type a message...']");
 	const question = "What is the current build?";
 
@@ -95,5 +130,28 @@ test("sends a message and receives a mocked response", async () => {
 	await messageInput.press("Enter");
 
 	await expect(page!.locator("user-message")).toContainText(question, { timeout: 60000 });
-	await expect(page!.locator("assistant-message")).toContainText(E2E_MESSAGE, { timeout: 60000 });
+	const assistantMessage = page!.locator("assistant-message").last();
+	await expect(assistantMessage).toContainText(/\S+/u, { timeout: 120000 });
+	const assistantPayload = await assistantMessage.evaluate((el) => {
+		const message = (el as { message?: Record<string, unknown> }).message;
+		const content = Array.isArray(message?.content) ? message.content : [];
+		const text = content
+			.filter((block: { type?: string; text?: unknown }) => block?.type === "text" && typeof block.text === "string")
+			.map((block: { text?: string }) => block.text ?? "")
+			.join("")
+			.trim();
+
+		return {
+			stopReason: (message?.stopReason as string | null) ?? null,
+			provider: (message?.provider as string | null) ?? null,
+			model: (message?.model as string | null) ?? null,
+			text,
+		};
+	});
+
+	expect(["stop", "length", "toolUse"]).toContain(assistantPayload.stopReason);
+	expect(assistantPayload.provider).toBe("zai");
+	expect(assistantPayload.model).toBe("glm-4.5");
+	expect(assistantPayload.text.length).toBeGreaterThan(0);
+	expect(assistantPayload.text).not.toContain("Error:");
 });

@@ -4,11 +4,9 @@ import {
 	defineElectrobunRPC,
 	ApplicationMenu,
 } from "electrobun/bun";
-import { completeSimple, getModel, type AssistantMessage } from "@mariozechner/pi-ai";
-import { getOAuthApiKey, loginOpenAICodex, type OAuthCredentials } from "@mariozechner/pi-ai/oauth";
-import { createServer } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { completeSimple, getModel } from "@mariozechner/pi-ai";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
 	type ChatRPCSchema,
@@ -20,22 +18,96 @@ import { DEFAULT_CHAT_SETTINGS } from "../mainview/chat-settings";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
-const OPENAI_CODEX_PROVIDER = "openai-codex";
-const OAUTH_CALLBACK_PORT = 1455;
-const AUTH_FILE_PATH = join(
-	Bun.env.HOME || process.env.HOME || process.env.USERPROFILE || process.cwd(),
-	".hub",
-	"chatgpt-auth.json",
-);
-const E2E_MODE = Bun.env.E2E === "1" || Bun.env.ELECTROBUN_E2E === "1";
+const DEFAULT_RPC_TIMEOUT_MS = 120000;
 
-const E2E_MESSAGE = "E2E mocked response from fixture mode.";
+const PROVIDER_ENV_VARS: Record<string, string> = {
+	openai: "OPENAI_API_KEY",
+	"azure-openai-responses": "AZURE_OPENAI_API_KEY",
+	google: "GEMINI_API_KEY",
+	groq: "GROQ_API_KEY",
+	cerebras: "CEREBRAS_API_KEY",
+	xai: "XAI_API_KEY",
+	openrouter: "OPENROUTER_API_KEY",
+	"vercel-ai-gateway": "AI_GATEWAY_API_KEY",
+	zai: "ZAI_API_KEY",
+	mistral: "MISTRAL_API_KEY",
+	minimax: "MINIMAX_API_KEY",
+	"minimax-cn": "MINIMAX_CN_API_KEY",
+	huggingface: "HF_TOKEN",
+	opencode: "OPENCODE_API_KEY",
+	"opencode-go": "OPENCODE_API_KEY",
+	"kimi-coding": "KIMI_API_KEY",
+};
 
-type StoredCredentials = Record<string, OAuthCredentials>;
+const E2E_ENV_FILES: string[] = [".env.e2e.local", ".env.e2e", ".env.local", ".env"];
 
-interface ApiKeyResult {
-	apiKey: string;
-	newCredentials: OAuthCredentials;
+function loadEnvFile(filePath: string): void {
+	if (!existsSync(filePath)) return;
+
+	try {
+		const content = readFileSync(filePath, "utf8");
+		for (const rawLine of content.split(/\r?\n/)) {
+			const line = rawLine.trim();
+			if (!line || line.startsWith("#")) continue;
+
+			const equalsIndex = line.indexOf("=");
+			if (equalsIndex < 0) continue;
+
+			const key = line.slice(0, equalsIndex).trim();
+			if (!key || process.env[key] !== undefined) continue;
+
+			let value = line.slice(equalsIndex + 1).trim();
+			if (
+				(value.startsWith('"') && value.endsWith('"')) ||
+				(value.startsWith("'") && value.endsWith("'"))
+			) {
+				value = value.slice(1, -1);
+			}
+
+			if (value) process.env[key] = value;
+		}
+	} catch {
+		// Ignore malformed or unreadable env files.
+	}
+}
+
+function loadRuntimeEnv(): void {
+	const cwd = process.cwd();
+	for (const file of E2E_ENV_FILES) {
+		loadEnvFile(join(cwd, file));
+	}
+}
+
+function getProviderEnvVar(provider: string): string | undefined {
+	return PROVIDER_ENV_VARS[provider];
+}
+
+function getProviderApiKey(provider: string): string | undefined {
+	const envVar = getProviderEnvVar(provider);
+	if (!envVar) return undefined;
+
+	const value = process.env[envVar];
+	return value ? value.trim() : undefined;
+}
+
+function getRpcRequestTimeoutMs(): number {
+	const source =
+		process.env.ELECTROBUN_RPC_TIMEOUT_MS ??
+		process.env.ELECTROBUN_RPC_REQUEST_TIMEOUT_MS ??
+		process.env.VITE_ELECTROBUN_RPC_TIMEOUT_MS;
+
+	const parsed = Number(source);
+	if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RPC_TIMEOUT_MS;
+
+	return Math.trunc(parsed);
+}
+
+function getApiKeyMissingError(provider: string): string {
+	const envVar = getProviderEnvVar(provider);
+	if (!envVar) {
+		return `No API key configured for provider "${provider}".`;
+	}
+	return `Missing ${envVar} for provider "${provider}".`;
 }
 
 async function getMainViewUrl(): Promise<string> {
@@ -52,171 +124,6 @@ async function getMainViewUrl(): Promise<string> {
 	return "views://mainview/index.html";
 }
 
-async function readStoredCredentials(): Promise<StoredCredentials> {
-	try {
-		const data = await readFile(AUTH_FILE_PATH, "utf8");
-		const parsed = JSON.parse(data);
-		if (parsed && typeof parsed === "object") {
-			return parsed as StoredCredentials;
-		}
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			console.error("Failed to read credentials file:", error);
-		}
-	}
-	return {};
-}
-
-async function writeStoredCredentials(credentials: StoredCredentials): Promise<void> {
-	const directory = dirname(AUTH_FILE_PATH);
-	await mkdir(directory, { recursive: true });
-	await writeFile(AUTH_FILE_PATH, JSON.stringify(credentials, null, 2), "utf8");
-}
-
-function invalidCredentials(value: unknown): value is OAuthCredentials {
-	if (!value || typeof value !== "object") return false;
-	const candidate = value as Partial<OAuthCredentials>;
-	return (
-		typeof candidate.access === "string" &&
-		typeof candidate.refresh === "string" &&
-		typeof candidate.expires === "number"
-	);
-}
-
-async function getPidsUsingPort(port: number): Promise<number[]> {
-	if (!["darwin", "linux"].includes(process.platform)) {
-		return [];
-	}
-
-	try {
-		const result = Bun.spawnSync(["lsof", "-nP", "-i", `tcp:${port}`, "-sTCP:LISTEN", "-t"], {
-			stdout: "pipe",
-			stderr: "ignore",
-		});
-		if (result.exitCode !== 0 || !result.stdout) {
-			return [];
-		}
-
-		const text = new TextDecoder().decode(result.stdout).trim();
-		if (!text) return [];
-		return [...new Set(text.split(/\s+/).map((entry) => Number(entry)).filter((pid) => Number.isInteger(pid) && pid > 0))];
-	} catch {
-		return [];
-	}
-}
-
-function canBindPort(port: number, host = "127.0.0.1"): Promise<boolean> {
-	return new Promise((resolve) => {
-		const server = createServer();
-		server.once("error", () => {
-			resolve(false);
-		});
-		server.listen({ port, host }, () => {
-			server.close(() => resolve(true));
-		});
-	});
-}
-
-async function ensureOAuthCallbackPortAvailable(): Promise<void> {
-	if (await canBindPort(OAUTH_CALLBACK_PORT)) {
-		return;
-	}
-
-	const pids = await getPidsUsingPort(OAUTH_CALLBACK_PORT);
-	if (pids.length === 0) {
-		throw new Error(`Port ${OAUTH_CALLBACK_PORT} is already in use. Free the port and try again.`);
-	}
-
-	for (const pid of pids) {
-		if (pid === process.pid) continue;
-		try {
-			process.kill(pid, "SIGKILL");
-		} catch {
-			// best-effort cleanup
-		}
-	}
-
-	await new Promise((resolve) => setTimeout(resolve, 250));
-
-	let portAvailable = false;
-	for (let attempt = 0; attempt < 3; attempt++) {
-		if (await canBindPort(OAUTH_CALLBACK_PORT)) {
-			portAvailable = true;
-			break;
-		}
-		await new Promise((resolve) => setTimeout(resolve, 150));
-	}
-
-	if (!portAvailable) {
-		throw new Error(
-			`Unable to free port ${OAUTH_CALLBACK_PORT} used by PID(s) ${pids.join(", ")}. Close those processes and retry.`,
-		);
-	}
-}
-
-async function getProviderCredentials(): Promise<OAuthCredentials | null> {
-	const store = await readStoredCredentials();
-	const candidate = store[OPENAI_CODEX_PROVIDER];
-	return candidate && invalidCredentials(candidate) ? candidate : null;
-}
-
-async function saveProviderCredentials(credentials: OAuthCredentials): Promise<void> {
-	const existing = await readStoredCredentials();
-	existing[OPENAI_CODEX_PROVIDER] = credentials;
-	await writeStoredCredentials(existing);
-}
-
-async function refreshAndGetApiKey(): Promise<ApiKeyResult | null> {
-	const credentials = await getProviderCredentials();
-	if (!credentials) return null;
-
-	try {
-		const resolved = await getOAuthApiKey(OPENAI_CODEX_PROVIDER, {
-			[OPENAI_CODEX_PROVIDER]: credentials,
-		});
-		if (!resolved) return null;
-		await saveProviderCredentials(resolved.newCredentials);
-		return resolved;
-	} catch (error) {
-		console.error("Unable to load valid OAuth API key:", error);
-		return null;
-	}
-}
-
-function createE2EMessage(provider: string, model: string): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text: E2E_MESSAGE }],
-		api: "openai-codex-responses",
-		provider,
-		model,
-		timestamp: Date.now(),
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 1,
-			cost: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				total: 0,
-			},
-		},
-		stopReason: "stop",
-	};
-}
-
-function toAuthState(result: ApiKeyResult | null): AuthStateResponse {
-	if (!result) return { connected: false };
-	return {
-		connected: true,
-		accountId: (result.newCredentials.accountId as string | undefined) || undefined,
-	};
-}
-
 function resolveSendDefaults(request: SendPromptRequest) {
 	return {
 		provider: request.provider || DEFAULT_CHAT_SETTINGS.provider,
@@ -225,80 +132,47 @@ function resolveSendDefaults(request: SendPromptRequest) {
 	};
 }
 
+function createAuthState(): AuthStateResponse {
+	const provider = DEFAULT_CHAT_SETTINGS.provider;
+	const apiKey = getProviderApiKey(provider);
+	if (!apiKey) {
+		return {
+			connected: false,
+			message: getApiKeyMissingError(provider),
+		};
+	}
+
+	return {
+		connected: true,
+		accountId: `${provider}-key`,
+	};
+}
+
 const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
+	maxRequestTime: getRpcRequestTimeoutMs(),
 	handlers: {
 		requests: {
 			getDefaults: () => DEFAULT_CHAT_SETTINGS,
-			getAuthState: async () => {
-				if (E2E_MODE) {
-					return { connected: true, accountId: "e2e" };
-				}
-				return toAuthState(await refreshAndGetApiKey());
-			},
+			getAuthState: async () => createAuthState(),
 			loginChatGPT: async () => {
-				if (E2E_MODE) {
-					return {
-						connected: true,
-						accountId: "e2e",
-						message: "E2E auth skipped.",
-					};
+				const state = createAuthState();
+				if (state.connected) {
+					state.message = `${DEFAULT_CHAT_SETTINGS.provider} uses API key authentication.`;
 				}
-				let authUrl: string | undefined;
-				try {
-					await ensureOAuthCallbackPortAvailable();
-					const credentials = await loginOpenAICodex({
-						onAuth: ({ url }) => {
-							authUrl = url;
-							Bun.open(url).catch(() => {
-								// Browser launch is best-effort; users can manually copy the link if needed.
-							});
-						},
-						onPrompt: async (prompt) => {
-							throw new Error(prompt.message);
-						},
-					});
-
-					await saveProviderCredentials(credentials);
-					const result = await refreshAndGetApiKey();
-					return {
-						...toAuthState(result),
-						message: "Login completed.",
-						authUrl,
-					};
-				} catch (error) {
-					const message =
-						error instanceof Error
-							? error.message
-							: "ChatGPT login failed. Try again.";
-					return {
-						connected: false,
-						message,
-						authUrl,
-					};
-				}
+				return state;
 			},
 			sendPrompt: async (payload) => {
 				const resolved = resolveSendDefaults(payload);
-				if (E2E_MODE) {
-					return {
-						message: createE2EMessage(
-							resolved.provider,
-							resolved.model,
-						),
-					};
-				}
-
-				const auth = await refreshAndGetApiKey();
-				if (!auth) {
-					throw new Error("No active ChatGPT OAuth session. Please log in first.");
+				const apiKey = getProviderApiKey(resolved.provider);
+				if (!apiKey) {
+					throw new Error(getApiKeyMissingError(resolved.provider));
 				}
 
 				const model = getModel(resolved.provider as never, resolved.model as never);
 				const context = { messages: payload.messages };
 				const reasoning = resolved.reasoningEffort === "off" ? undefined : resolved.reasoningEffort;
-
 				const response = await completeSimple(model, context, {
-					apiKey: auth.apiKey,
+					apiKey,
 					reasoning,
 				});
 
@@ -306,10 +180,7 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 					throw new Error(response.errorMessage || "Chat request failed.");
 				}
 
-				const result: SendPromptResponse = {
-					message: response,
-				};
-				return result;
+				return { message: response } as SendPromptResponse;
 			},
 		},
 	},
@@ -350,6 +221,8 @@ const appMenu = [
 ];
 
 ApplicationMenu.setApplicationMenu(appMenu);
+
+loadRuntimeEnv();
 
 const url = await getMainViewUrl();
 

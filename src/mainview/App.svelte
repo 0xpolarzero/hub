@@ -20,10 +20,15 @@ import { Electroview } from "electrobun/view";
 		type Message,
 	} from "@mariozechner/pi-ai";
 	import type { ChatRPCSchema, SendPromptRequest, SendPromptResponse } from "./chat-rpc";
-	import { DEFAULT_CHAT_SETTINGS } from "./chat-settings";
+import { DEFAULT_CHAT_SETTINGS } from "./chat-settings";
+
+	const DEFAULT_RPC_TIMEOUT_MS = 120000;
+	const envTimeout = Number(import.meta.env.VITE_ELECTROBUN_RPC_TIMEOUT_MS ?? `${DEFAULT_RPC_TIMEOUT_MS}`);
+	const rpcRequestTimeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? Math.trunc(envTimeout) : DEFAULT_RPC_TIMEOUT_MS;
 
 	const rpc = Electroview.defineRPC<ChatRPCSchema>({
 		handlers: {},
+		maxRequestTime: rpcRequestTimeoutMs,
 	});
 	new Electroview({ rpc });
 
@@ -68,7 +73,7 @@ import { Electroview } from "electrobun/view";
 		return {
 			role: "assistant",
 			content: [{ type: "text", text: message }],
-			api: "openai-codex-responses",
+			api: `${provider}-responses`,
 			provider,
 			model,
 			timestamp: Date.now(),
