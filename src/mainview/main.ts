@@ -1,4 +1,5 @@
 import "./app.css";
+import "@mariozechner/pi-web-ui/app.css";
 import App from "./App.svelte";
 import { mount } from "svelte";
 

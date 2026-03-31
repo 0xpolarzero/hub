@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Output
+build/
+dist/
+coverage/
+
+# Framework/build artifacts
+.electrobun/
+.svelte-kit/
+.vite/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Bun cache artifacts
+.bun/
+bun.lockb
+bun.lock
+
+# Logs and debug output
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Environment
+.env
+.env.*
+
+# OS / editor files
+.DS_Store
+.DS_Store?
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+coverage/
+temp/
+.tmp/
