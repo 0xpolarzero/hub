@@ -1,5 +1,10 @@
-import { BrowserWindow, Updater, defineElectrobunRPC } from "electrobun/bun";
-import { completeSimple, getModel } from "@mariozechner/pi-ai";
+import {
+	BrowserWindow,
+	Updater,
+	defineElectrobunRPC,
+	ApplicationMenu,
+} from "electrobun/bun";
+import { completeSimple, getModel, type AssistantMessage } from "@mariozechner/pi-ai";
 import { getOAuthApiKey, loginOpenAICodex, type OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -22,6 +27,9 @@ const AUTH_FILE_PATH = join(
 	".hub",
 	"chatgpt-auth.json",
 );
+const E2E_MODE = Bun.env.E2E === "1" || Bun.env.ELECTROBUN_E2E === "1";
+
+const E2E_MESSAGE = "E2E mocked response from fixture mode.";
 
 type StoredCredentials = Record<string, OAuthCredentials>;
 
@@ -36,7 +44,7 @@ async function getMainViewUrl(): Promise<string> {
 		try {
 			await fetch(DEV_SERVER_URL, { method: "HEAD" });
 			console.log(`HMR enabled: Using Vite dev server at ${DEV_SERVER_URL}`);
-			return DEV_SERVER_URL;
+			return `${DEV_SERVER_URL}`;
 		} catch {
 			console.log("Vite dev server not running. Run 'bun run dev:hmr' for HMR support.");
 		}
@@ -175,6 +183,32 @@ async function refreshAndGetApiKey(): Promise<ApiKeyResult | null> {
 	}
 }
 
+function createE2EMessage(provider: string, model: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: E2E_MESSAGE }],
+		api: "openai-codex-responses",
+		provider,
+		model,
+		timestamp: Date.now(),
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "stop",
+	};
+}
+
 function toAuthState(result: ApiKeyResult | null): AuthStateResponse {
 	if (!result) return { connected: false };
 	return {
@@ -195,8 +229,20 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 	handlers: {
 		requests: {
 			getDefaults: () => DEFAULT_CHAT_SETTINGS,
-			getAuthState: async () => toAuthState(await refreshAndGetApiKey()),
+			getAuthState: async () => {
+				if (E2E_MODE) {
+					return { connected: true, accountId: "e2e" };
+				}
+				return toAuthState(await refreshAndGetApiKey());
+			},
 			loginChatGPT: async () => {
+				if (E2E_MODE) {
+					return {
+						connected: true,
+						accountId: "e2e",
+						message: "E2E auth skipped.",
+					};
+				}
 				let authUrl: string | undefined;
 				try {
 					await ensureOAuthCallbackPortAvailable();
@@ -233,6 +279,15 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 			},
 			sendPrompt: async (payload) => {
 				const resolved = resolveSendDefaults(payload);
+				if (E2E_MODE) {
+					return {
+						message: createE2EMessage(
+							resolved.provider,
+							resolved.model,
+						),
+					};
+				}
+
 				const auth = await refreshAndGetApiKey();
 				if (!auth) {
 					throw new Error("No active ChatGPT OAuth session. Please log in first.");
@@ -259,6 +314,42 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 		},
 	},
 });
+
+const appMenu = [
+	{
+		label: "Electrobun Chat",
+		submenu: [
+			{ role: "about" },
+			{ type: "separator" },
+			{ role: "hide", accelerator: "CommandOrControl+H" },
+			{ role: "hideOthers", accelerator: "CommandOrControl+Option+H" },
+			{ role: "showAll" },
+			{ type: "separator" },
+			{ role: "quit", accelerator: "CommandOrControl+Q" },
+		],
+	},
+	{
+		label: "Edit",
+		submenu: [
+			{ role: "undo", accelerator: "CommandOrControl+Z" },
+			{ role: "redo", accelerator: "CommandOrControl+Shift+Z" },
+			{ type: "separator" },
+			{ role: "cut", accelerator: "CommandOrControl+X" },
+			{ role: "copy", accelerator: "CommandOrControl+C" },
+			{ role: "paste", accelerator: "CommandOrControl+V" },
+			{ role: "pasteAndMatchStyle" },
+			{ role: "delete" },
+			{ type: "separator" },
+			{ role: "selectAll", accelerator: "CommandOrControl+A" },
+		],
+	},
+	{
+		label: "Window",
+		submenu: [{ role: "close" }, { role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "bringAllToFront" }],
+	},
+];
+
+ApplicationMenu.setApplicationMenu(appMenu);
 
 const url = await getMainViewUrl();
 
