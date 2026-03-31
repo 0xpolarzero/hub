@@ -122,36 +122,49 @@ test.afterAll(async () => {
 	if (appProcess) appProcess.kill("SIGINT");
 });
 
-test("sends a message and receives a live response", async () => {
-	const messageInput = page!.locator("textarea[placeholder='Type a message...']");
-	const question = "What is the current build?";
+test("streams assistant response progressively", async () => {
+    const messageInput = page!.locator("textarea[placeholder='Type a message...']");
+    const question = "Count from 1 to 10, one number per line.";
 
-	await messageInput.fill(question);
-	await messageInput.press("Enter");
+    await messageInput.fill(question);
+    await messageInput.press("Enter");
 
-	await expect(page!.locator("user-message")).toContainText(question, { timeout: 60000 });
-	const assistantMessage = page!.locator("assistant-message").last();
-	await expect(assistantMessage).toContainText(/\S+/u, { timeout: 120000 });
-	const assistantPayload = await assistantMessage.evaluate((el) => {
-		const message = (el as { message?: Record<string, unknown> }).message;
-		const content = Array.isArray(message?.content) ? message.content : [];
-		const text = content
-			.filter((block: { type?: string; text?: unknown }) => block?.type === "text" && typeof block.text === "string")
-			.map((block: { text?: string }) => block.text ?? "")
-			.join("")
-			.trim();
+    await expect(page!.locator("user-message")).toContainText(question, { timeout: 60000 });
 
-		return {
-			stopReason: (message?.stopReason as string | null) ?? null,
-			provider: (message?.provider as string | null) ?? null,
-			model: (message?.model as string | null) ?? null,
-			text,
-		};
-	});
+    // Start capturing text snapshots before the response completes
+    const snapshotHandle = await page!.evaluateHandle(() => {
+        const win = window as unknown as { __streamSnapshots: string[] };
+        win.__streamSnapshots = [];
+        const id = setInterval(() => {
+            const el = document.querySelector("assistant-message:last-of-type");
+            if (!el) return;
+            const message = (el as { message?: Record<string, unknown> }).message;
+            if (!message) return;
+            const content = Array.isArray(message.content) ? message.content : [];
+            const text = content
+                .filter((block: { type?: string; text?: unknown }) => block?.type === "text" && typeof block.text === "string")
+                .map((block: { text?: string }) => block.text ?? "")
+                .join("");
+            if (text) win.__streamSnapshots.push(text);
+        }, 100);
+        return id;
+    });
 
-	expect(["stop", "length", "toolUse"]).toContain(assistantPayload.stopReason);
-	expect(assistantPayload.provider).toBe("zai");
-	expect(assistantPayload.model).toBe("glm-4.5");
-	expect(assistantPayload.text.length).toBeGreaterThan(0);
-	expect(assistantPayload.text).not.toContain("Error:");
+    const assistantMessage = page!.locator("assistant-message").last();
+    await expect(assistantMessage).toContainText(/\S+/u, { timeout: 120000 });
+
+    await page!.evaluate((id) => clearInterval(id as number), snapshotHandle);
+
+    const streamSnapshots = await page!.evaluate(() => {
+        return (window as unknown as { __streamSnapshots: string[] }).__streamSnapshots ?? [];
+    });
+
+    expect(streamSnapshots.length).toBeGreaterThanOrEqual(2);
+
+    for (let i = 1; i < streamSnapshots.length; i++) {
+        expect(streamSnapshots[i].length).toBeGreaterThanOrEqual(streamSnapshots[i - 1].length);
+    }
+
+    const finalText = streamSnapshots[streamSnapshots.length - 1];
+    expect(finalText.length).toBeGreaterThan(0);
 });

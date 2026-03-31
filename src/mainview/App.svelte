@@ -16,10 +16,11 @@ import {
 	import {
 		createAssistantMessageEventStream,
 		type AssistantMessage,
+		type AssistantMessageEvent,
 		getModel,
 		type Message,
 	} from "@mariozechner/pi-ai";
-	import type { ChatRPCSchema, SendPromptRequest, SendPromptResponse } from "./chat-rpc";
+	import type { ChatRPCSchema, SendPromptRequest } from "./chat-rpc";
 import { DEFAULT_CHAT_SETTINGS } from "./chat-settings";
 
 	const DEFAULT_RPC_TIMEOUT_MS = 120000;
@@ -96,46 +97,16 @@ import { DEFAULT_CHAT_SETTINGS } from "./chat-settings";
 
 		void (async () => {
 			try {
-				const response: SendPromptResponse = await rpc.request.sendPrompt(request);
-				const assistantMessage = response.message;
-				stream.push({ type: "start", partial: assistantMessage });
+				const { streamId } = await rpc.request.sendPrompt(request);
 
-				let textIndex = -1;
-				let text = "";
-				for (let i = 0; i < assistantMessage.content.length; i++) {
-					const chunk = assistantMessage.content[i];
-					if (chunk.type === "text") {
-						textIndex = i;
-						text = chunk.text;
-						break;
+				const handler = (payload: { streamId: string; event: AssistantMessageEvent }) => {
+					if (payload.streamId !== streamId) return;
+					stream.push(payload.event);
+					if (payload.event.type === "done" || payload.event.type === "error") {
+						rpc.removeMessageListener("sendStreamEvent" as never, handler as never);
 					}
-				}
-
-				if (textIndex >= 0) {
-					stream.push({ type: "text_start", contentIndex: textIndex, partial: assistantMessage });
-					if (text) {
-						stream.push({
-							type: "text_delta",
-							contentIndex: textIndex,
-							delta: text,
-							partial: assistantMessage,
-						});
-					}
-					stream.push({ type: "text_end", contentIndex: textIndex, content: text, partial: assistantMessage });
-				}
-
-				if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
-					stream.push({ type: "error", reason: assistantMessage.stopReason, error: assistantMessage });
-					return;
-				}
-
-				const doneReason =
-					assistantMessage.stopReason === "toolUse" ||
-					assistantMessage.stopReason === "length" ||
-					assistantMessage.stopReason === "stop"
-						? assistantMessage.stopReason
-						: "stop";
-				stream.push({ type: "done", reason: doneReason, message: assistantMessage });
+				};
+				rpc.addMessageListener("sendStreamEvent" as never, handler as never);
 			} catch (error) {
 				const fallback = createFailureMessage(
 					error,

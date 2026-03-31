@@ -4,7 +4,7 @@ import {
 	defineElectrobunRPC,
 	ApplicationMenu,
 } from "electrobun/bun";
-import { completeSimple, getModel } from "@mariozechner/pi-ai";
+import { streamSimple, getModel } from "@mariozechner/pi-ai";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -14,6 +14,7 @@ import {
 	type SendPromptResponse,
 	type AuthStateResponse,
 } from "../mainview/chat-rpc";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { DEFAULT_CHAT_SETTINGS } from "../mainview/chat-settings";
 
 const DEV_SERVER_PORT = 5173;
@@ -171,16 +172,35 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 				const model = getModel(resolved.provider as never, resolved.model as never);
 				const context = { messages: payload.messages };
 				const reasoning = resolved.reasoningEffort === "off" ? undefined : resolved.reasoningEffort;
-				const response = await completeSimple(model, context, {
+				const eventStream = streamSimple(model, context, {
 					apiKey,
 					reasoning,
 				});
 
-				if (response.stopReason === "error") {
-					throw new Error(response.errorMessage || "Chat request failed.");
-				}
+				const streamId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-				return { message: response } as SendPromptResponse;
+				void (async () => {
+					try {
+						for await (const event of eventStream) {
+							rpc.send.sendStreamEvent({ streamId, event });
+						}
+					} catch (error) {
+						const fallback: AssistantMessage = {
+							role: "assistant",
+							content: [{ type: "text", text: error instanceof Error ? error.message : "Streaming failed." }],
+							api: `${resolved.provider}-responses`,
+							provider: resolved.provider,
+							model: resolved.model,
+							timestamp: Date.now(),
+							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+							stopReason: "error",
+							errorMessage: error instanceof Error ? error.message : "Streaming failed.",
+						};
+						rpc.send.sendStreamEvent({ streamId, event: { type: "error", reason: "error", error: fallback } });
+					}
+				})();
+
+				return { streamId } as SendPromptResponse;
 			},
 		},
 	},

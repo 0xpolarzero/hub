@@ -1,5 +1,5 @@
 import type { ChatDefaults, ReasoningEffort } from "./chat-settings";
-import type { Message, AssistantMessage } from "@mariozechner/pi-ai";
+import type { Message, AssistantMessageEvent } from "@mariozechner/pi-ai";
 
 export interface SendPromptRequest {
 	messages: Message[];
@@ -9,7 +9,12 @@ export interface SendPromptRequest {
 }
 
 export interface SendPromptResponse {
-	message: AssistantMessage;
+	streamId: string;
+}
+
+export interface StreamEventMessage {
+	streamId: string;
+	event: AssistantMessageEvent;
 }
 
 export interface AuthStateResponse {
@@ -36,7 +41,9 @@ export interface ChatRPCSchema {
 				response: SendPromptResponse;
 			};
 		};
-		messages: Record<string, never>;
+		messages: {
+			sendStreamEvent: StreamEventMessage;
+		};
 	};
 	webview: {
 		requests: Record<string, never>;
