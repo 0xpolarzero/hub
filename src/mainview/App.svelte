@@ -61,6 +61,7 @@ import { Electroview } from "electrobun/view";
 	let panel: ChatPanel | null = null;
 	let providerAuthMessage: string | null = null;
 	let disposed = false;
+	const isE2EMode = import.meta.env.VITE_ELECTROBUN_E2E === "1";
 
 	function createFailureMessage(error: unknown, provider: string, model: string): AssistantMessage {
 		const message = error instanceof Error ? error.message : "Unable to generate a response.";
@@ -179,7 +180,7 @@ import { Electroview } from "electrobun/view";
 
 			const defaults = await rpc.request.getDefaults();
 
-			if (auth.connected) {
+			if (auth.connected || isE2EMode) {
 				await storage.providerKeys.set(defaults.provider, "oauth");
 			}
 

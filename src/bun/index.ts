@@ -356,12 +356,8 @@ const url = await getMainViewUrl();
 const mainWindow = new BrowserWindow({
 	title: "Electrobun Chat",
 	url,
-	frame: {
-		width: 960,
-		height: 760,
-		x: 200,
-		y: 200,
-	},
+	width: 960,
+	height: 760,
 	rpc,
 });
 
