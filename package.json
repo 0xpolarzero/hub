@@ -14,11 +14,11 @@
 		"electrobun": "1.16.0"
 	},
 	"devDependencies": {
-		"@sveltejs/vite-plugin-svelte": "^5.0.1",
-		"@types/bun": "latest",
-		"concurrently": "^9.1.0",
-		"svelte": "^5.14.1",
-		"typescript": "^5.7.2",
-		"vite": "^6.0.3"
+		"@sveltejs/vite-plugin-svelte": "^7.0.0",
+		"@types/bun": "^1.3.11",
+		"concurrently": "^9.2.1",
+		"svelte": "^5.55.1",
+		"typescript": "^6.0.2",
+		"vite": "^8.0.3"
 	}
 }
