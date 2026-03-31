@@ -5,6 +5,7 @@
 		ChatPanel,
 		CustomProvidersStore,
 		IndexedDBStorageBackend,
+		ModelSelector,
 		ProviderKeysStore,
 		SessionsStore,
 		SettingsStore,
@@ -166,6 +167,11 @@
 
 			const chatPanel = new ChatPanel();
 			await chatPanel.setAgent(agent, {
+				onModelSelect: async () => {
+					const auths = await rpc.request.listProviderAuths();
+					const allowed = auths.filter((a) => a.hasKey).map((a) => a.provider);
+					ModelSelector.open(agent.state.model, (model) => agent.setModel(model), allowed);
+				},
 				onApiKeyRequired: async (provider) => {
 					const loginState = await rpc.request.loginChatGPT();
 					if (!loginState.connected) return false;
