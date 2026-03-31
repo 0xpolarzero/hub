@@ -15,3 +15,7 @@ This repository contains an Electrobun desktop app scaffolded from the official
 
 ## Notes
 - This is an Electrobun project, not an Electron app.
+
+## Reference code for tools
+- `docs/references/` contains git submodules for libraries and frameworks we use in this repository as reference code for LLM-assisted development.
+- `docs/references/pi-mono` — Reference for logic related to interacting with LLM agents in our app.

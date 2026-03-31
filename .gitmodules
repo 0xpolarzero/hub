@@ -1,0 +1,3 @@
+[submodule "docs/references/pi-mono"]
+	path = docs/references/pi-mono
+	url = https://github.com/badlogic/pi-mono.git
