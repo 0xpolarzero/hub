@@ -4,7 +4,7 @@ import {
 	defineElectrobunRPC,
 	ApplicationMenu,
 } from "electrobun/bun";
-import { streamSimple, getModel } from "@mariozechner/pi-ai";
+import { streamSimple, getModel, getProviders } from "@mariozechner/pi-ai";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,32 +13,16 @@ import {
 	type SendPromptRequest,
 	type SendPromptResponse,
 	type AuthStateResponse,
+	type ProviderAuthInfo,
 } from "../mainview/chat-rpc";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { DEFAULT_CHAT_SETTINGS } from "../mainview/chat-settings";
+import { resolveApiKey, resolveAuthState, setApiKey as storeApiKey, removeCredential, getProviderEnvVar } from "./auth-store";
+import { supportsOAuth, startOAuthLogin, refreshIfNeeded } from "./oauth-login";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
 const DEFAULT_RPC_TIMEOUT_MS = 120000;
-
-const PROVIDER_ENV_VARS: Record<string, string> = {
-	openai: "OPENAI_API_KEY",
-	"azure-openai-responses": "AZURE_OPENAI_API_KEY",
-	google: "GEMINI_API_KEY",
-	groq: "GROQ_API_KEY",
-	cerebras: "CEREBRAS_API_KEY",
-	xai: "XAI_API_KEY",
-	openrouter: "OPENROUTER_API_KEY",
-	"vercel-ai-gateway": "AI_GATEWAY_API_KEY",
-	zai: "ZAI_API_KEY",
-	mistral: "MISTRAL_API_KEY",
-	minimax: "MINIMAX_API_KEY",
-	"minimax-cn": "MINIMAX_CN_API_KEY",
-	huggingface: "HF_TOKEN",
-	opencode: "OPENCODE_API_KEY",
-	"opencode-go": "OPENCODE_API_KEY",
-	"kimi-coding": "KIMI_API_KEY",
-};
 
 const E2E_ENV_FILES: string[] = [".env.e2e.local", ".env.e2e", ".env.local", ".env"];
 
@@ -79,18 +63,6 @@ function loadRuntimeEnv(): void {
 	}
 }
 
-function getProviderEnvVar(provider: string): string | undefined {
-	return PROVIDER_ENV_VARS[provider];
-}
-
-function getProviderApiKey(provider: string): string | undefined {
-	const envVar = getProviderEnvVar(provider);
-	if (!envVar) return undefined;
-
-	const value = process.env[envVar];
-	return value ? value.trim() : undefined;
-}
-
 function getRpcRequestTimeoutMs(): number {
 	const source =
 		process.env.ELECTROBUN_RPC_TIMEOUT_MS ??
@@ -108,7 +80,7 @@ function getApiKeyMissingError(provider: string): string {
 	if (!envVar) {
 		return `No API key configured for provider "${provider}".`;
 	}
-	return `Missing ${envVar} for provider "${provider}".`;
+	return `Missing ${envVar} for provider "${provider}". Add one in Settings.`;
 }
 
 async function getMainViewUrl(): Promise<string> {
@@ -135,8 +107,8 @@ function resolveSendDefaults(request: SendPromptRequest) {
 
 function createAuthState(): AuthStateResponse {
 	const provider = DEFAULT_CHAT_SETTINGS.provider;
-	const apiKey = getProviderApiKey(provider);
-	if (!apiKey) {
+	const state = resolveAuthState(provider);
+	if (!state.connected) {
 		return {
 			connected: false,
 			message: getApiKeyMissingError(provider),
@@ -145,7 +117,7 @@ function createAuthState(): AuthStateResponse {
 
 	return {
 		connected: true,
-		accountId: `${provider}-key`,
+		accountId: `${provider}-${state.keyType}`,
 	};
 }
 
@@ -164,13 +136,18 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 			},
 			sendPrompt: async (payload) => {
 				const resolved = resolveSendDefaults(payload);
-				const apiKey = getProviderApiKey(resolved.provider);
+
+				if (supportsOAuth(resolved.provider)) {
+					await refreshIfNeeded(resolved.provider);
+				}
+
+				const apiKey = resolveApiKey(resolved.provider);
 				if (!apiKey) {
 					throw new Error(getApiKeyMissingError(resolved.provider));
 				}
 
 				const model = getModel(resolved.provider as never, resolved.model as never);
-				const context = { messages: payload.messages };
+				const context = { systemPrompt: "You are a helpful assistant.", messages: payload.messages };
 				const reasoning = resolved.reasoningEffort === "off" ? undefined : resolved.reasoningEffort;
 				const eventStream = streamSimple(model, context, {
 					apiKey,
@@ -201,6 +178,34 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 				})();
 
 				return { streamId } as SendPromptResponse;
+			},
+			listProviderAuths: async (): Promise<ProviderAuthInfo[]> => {
+				const providers = getProviders();
+				return providers.map((id) => {
+					const state = resolveAuthState(id);
+					return {
+						provider: id,
+						hasKey: state.connected,
+						keyType: state.keyType,
+						supportsOAuth: supportsOAuth(id),
+					};
+				});
+			},
+			setProviderApiKey: async (params: { providerId: string; apiKey: string }) => {
+				storeApiKey(params.providerId, params.apiKey);
+				return { ok: true };
+			},
+			startOAuth: async (params: { providerId: string }) => {
+				try {
+					await startOAuthLogin(params.providerId);
+					return { ok: true };
+				} catch (err) {
+					return { ok: false, error: err instanceof Error ? err.message : String(err) };
+				}
+			},
+			removeProviderAuth: async (params: { providerId: string }) => {
+				removeCredential(params.providerId);
+				return { ok: true };
 			},
 		},
 	},

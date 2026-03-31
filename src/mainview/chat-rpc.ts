@@ -1,6 +1,8 @@
 import type { ChatDefaults, ReasoningEffort } from "./chat-settings";
 import type { Message, AssistantMessageEvent } from "@mariozechner/pi-ai";
 
+export type AuthKeyType = "apikey" | "oauth" | "env" | "none";
+
 export interface SendPromptRequest {
 	messages: Message[];
 	provider?: string;
@@ -24,6 +26,13 @@ export interface AuthStateResponse {
 	authUrl?: string;
 }
 
+export interface ProviderAuthInfo {
+	provider: string;
+	hasKey: boolean;
+	keyType: AuthKeyType;
+	supportsOAuth: boolean;
+}
+
 export interface ChatRPCSchema {
 	bun: {
 		requests: {
@@ -39,6 +48,21 @@ export interface ChatRPCSchema {
 			sendPrompt: {
 				params: SendPromptRequest;
 				response: SendPromptResponse;
+			};
+			listProviderAuths: {
+				response: ProviderAuthInfo[];
+			};
+			setProviderApiKey: {
+				params: { providerId: string; apiKey: string };
+				response: { ok: boolean };
+			};
+			startOAuth: {
+				params: { providerId: string };
+				response: { ok: boolean; error?: string };
+			};
+			removeProviderAuth: {
+				params: { providerId: string };
+				response: { ok: boolean };
 			};
 		};
 		messages: {

@@ -1,3 +1,6 @@
 [submodule "docs/references/pi-mono"]
 	path = docs/references/pi-mono
 	url = https://github.com/badlogic/pi-mono.git
+[submodule "docs/references/rivet"]
+	path = docs/references/rivet
+	url = https://github.com/rivet-gg/rivet.git
