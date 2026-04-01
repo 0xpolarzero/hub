@@ -39,6 +39,9 @@ pnpm-debug.log*
 *.swp
 *.swo
 
+# Test output
+test-results/
+
 # Temporary files
 coverage/
 temp/
