@@ -96,10 +96,10 @@
 					if (payload.streamId !== streamId) return;
 					stream.push(payload.event);
 					if (payload.event.type === "done" || payload.event.type === "error") {
-						rpc.removeMessageListener("sendStreamEvent" as never, handler as never);
+						rpc.removeMessageListener("sendStreamEvent", handler);
 					}
 				};
-				rpc.addMessageListener("sendStreamEvent" as never, handler as never);
+				rpc.addMessageListener("sendStreamEvent", handler);
 			} catch (error) {
 				const fallback = createFailureMessage(
 					error,

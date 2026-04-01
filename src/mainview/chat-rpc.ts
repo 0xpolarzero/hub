@@ -49,6 +49,10 @@ export interface ChatRPCSchema {
 				params: SendPromptRequest;
 				response: SendPromptResponse;
 			};
+			sendPromptAgentOs: {
+				params: SendPromptRequest;
+				response: SendPromptResponse;
+			};
 			listProviderAuths: {
 				response: ProviderAuthInfo[];
 			};

@@ -25,7 +25,29 @@ export default {
 		identifier: "svelteapp.electrobun.dev",
 		version: "0.0.1",
 	},
+	scripts: {
+		postBuild: "scripts/postbuild.ts",
+	},
 	build: {
+		bun: {
+			external: [
+				"@rivet-dev/*",
+				"secure-exec",
+				"@secure-exec/*",
+				"node-stdlib-browser",
+				"esbuild",
+				"@esbuild/*",
+				"web-streams-polyfill",
+				"cbor-x",
+				"cjs-module-lexer",
+				"es-module-lexer",
+				"pkg-dir",
+				"@mariozechner/*",
+				"@agentclientprotocol/*",
+				"better-sqlite3",
+				"pyodide",
+			],
+		},
 		// Vite builds to dist/, we copy from there
 		copy: {
 			"dist/index.html": "views/mainview/index.html",

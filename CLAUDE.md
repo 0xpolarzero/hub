@@ -1,4 +1,4 @@
-# AGENTS
+# CLAUDE.md
 
 This repository contains an Electrobun desktop app scaffolded from the official
 `electrobun init svelte` template.

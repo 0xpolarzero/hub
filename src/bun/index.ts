@@ -15,10 +15,11 @@ import {
 	type AuthStateResponse,
 	type ProviderAuthInfo,
 } from "../mainview/chat-rpc";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage, UserMessage, Message } from "@mariozechner/pi-ai";
 import { DEFAULT_CHAT_SETTINGS } from "../mainview/chat-settings";
 import { resolveApiKey, resolveAuthState, setApiKey as storeApiKey, removeCredential, getProviderEnvVar } from "./auth-store";
 import { supportsOAuth, startOAuthLogin, refreshIfNeeded } from "./oauth-login";
+import { initVm, disposeVm, createAgentSession, sendAgentPrompt } from "./agent-os-host";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
@@ -121,6 +122,14 @@ function createAuthState(): AuthStateResponse {
 	};
 }
 
+function extractUserText(msg: UserMessage): string {
+	if (typeof msg.content === "string") return msg.content;
+	return msg.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n") || JSON.stringify(msg);
+}
+
 const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 	maxRequestTime: getRpcRequestTimeoutMs(),
 	handlers: {
@@ -146,7 +155,10 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 					throw new Error(getApiKeyMissingError(resolved.provider));
 				}
 
-				const model = getModel(resolved.provider as never, resolved.model as never);
+				const model = getModel(
+					resolved.provider as Parameters<typeof getModel>[0],
+					resolved.model as Parameters<typeof getModel>[1],
+				);
 				const context = { systemPrompt: "You are a helpful assistant.", messages: payload.messages };
 				const reasoning = resolved.reasoningEffort === "off" ? undefined : resolved.reasoningEffort;
 				const eventStream = streamSimple(model, context, {
@@ -178,6 +190,28 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 				})();
 
 				return { streamId } as SendPromptResponse;
+			},
+			sendPromptAgentOs: async (payload) => {
+				const resolved = resolveSendDefaults(payload);
+
+				if (supportsOAuth(resolved.provider)) {
+					await refreshIfNeeded(resolved.provider);
+				}
+
+				const apiKey = resolveApiKey(resolved.provider);
+				if (!apiKey) {
+					throw new Error(getApiKeyMissingError(resolved.provider));
+				}
+
+				const session = await createAgentSession(resolved.provider, resolved.model);
+				const lastUserMsg = payload.messages.filter((m: Message): m is UserMessage => m.role === "user").pop();
+				const prompt = lastUserMsg ? extractUserText(lastUserMsg) : "";
+
+				void sendAgentPrompt(session, prompt, resolved.provider, resolved.model, (event) => {
+					rpc.send.sendStreamEvent({ streamId: session.streamId, event });
+				});
+
+				return { streamId: session.streamId } as SendPromptResponse;
 			},
 			listProviderAuths: async (): Promise<ProviderAuthInfo[]> => {
 				const providers = getProviders();
@@ -248,6 +282,8 @@ const appMenu = [
 ApplicationMenu.setApplicationMenu(appMenu);
 
 loadRuntimeEnv();
+
+await initVm();
 
 const url = await getMainViewUrl();
 
