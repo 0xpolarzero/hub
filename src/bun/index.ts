@@ -1,30 +1,60 @@
 import {
+	ApplicationMenu,
 	BrowserWindow,
 	Updater,
 	defineElectrobunRPC,
-	ApplicationMenu,
 } from "electrobun/bun";
-import { streamSimple, getModel, getProviders } from "@mariozechner/pi-ai";
+import { getModel, getProviders } from "@mariozechner/pi-ai";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
 	type ChatRPCSchema,
-	type SendPromptRequest,
-	type SendPromptResponse,
 	type AuthStateResponse,
+	type PermissionRequestMessage,
 	type ProviderAuthInfo,
+	type SendPromptRequest,
+	type StreamEventMessage,
 } from "../mainview/chat-rpc";
-import type { AssistantMessage, UserMessage, Message } from "@mariozechner/pi-ai";
-import { DEFAULT_CHAT_SETTINGS } from "../mainview/chat-settings";
-import { resolveApiKey, resolveAuthState, setApiKey as storeApiKey, removeCredential, getProviderEnvVar } from "./auth-store";
-import { supportsOAuth, startOAuthLogin, refreshIfNeeded } from "./oauth-login";
-import { initVm, disposeVm, createAgentSession, sendAgentPrompt } from "./agent-os-host";
+import {
+	DEFAULT_CHAT_SETTINGS,
+	type ReasoningEffort,
+} from "../mainview/chat-settings";
+import {
+	getProviderEnvVar,
+	resolveApiKey,
+	resolveAuthState,
+	removeCredential,
+	setApiKey as storeApiKey,
+} from "./auth-store";
+import { refreshIfNeeded, startOAuthLogin, supportsOAuth } from "./oauth-login";
+import {
+	cancelAgentSession,
+	initVm,
+	respondPermission,
+	sendAgentPrompt,
+	setSessionModel,
+	setSessionThoughtLevel,
+} from "./agent-os-host";
+
+type SessionMutationResponse = {
+	ok: boolean;
+	sessionId: string;
+};
+
+type BackendRPCSchema = ChatRPCSchema & {
+	bun: ChatRPCSchema["bun"] & {
+		messages: {
+			sendStreamEvent: StreamEventMessage;
+			permissionRequest: PermissionRequestMessage;
+		};
+	};
+};
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
 const DEFAULT_RPC_TIMEOUT_MS = 120000;
-
+const DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant.";
 const E2E_ENV_FILES: string[] = [".env.e2e.local", ".env.e2e", ".env.local", ".env"];
 
 function loadEnvFile(filePath: string): void {
@@ -106,6 +136,10 @@ function resolveSendDefaults(request: SendPromptRequest) {
 	};
 }
 
+function createStreamId(): string {
+	return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function createAuthState(): AuthStateResponse {
 	const provider = DEFAULT_CHAT_SETTINGS.provider;
 	const state = resolveAuthState(provider);
@@ -122,28 +156,20 @@ function createAuthState(): AuthStateResponse {
 	};
 }
 
-function extractUserText(msg: UserMessage): string {
-	if (typeof msg.content === "string") return msg.content;
-	return msg.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n") || JSON.stringify(msg);
-}
-
-const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
+const rpc = defineElectrobunRPC<BackendRPCSchema>("bun", {
 	maxRequestTime: getRpcRequestTimeoutMs(),
 	handlers: {
 		requests: {
 			getDefaults: () => DEFAULT_CHAT_SETTINGS,
-			getAuthState: async () => createAuthState(),
-			loginChatGPT: async () => {
+			getAuthState: async (): Promise<AuthStateResponse> => createAuthState(),
+			loginChatGPT: async (): Promise<AuthStateResponse> => {
 				const state = createAuthState();
 				if (state.connected) {
 					state.message = `${DEFAULT_CHAT_SETTINGS.provider} uses API key authentication.`;
 				}
 				return state;
 			},
-			sendPrompt: async (payload) => {
+			sendPrompt: async (payload: SendPromptRequest): Promise<{ streamId: string; sessionId: string }> => {
 				const resolved = resolveSendDefaults(payload);
 
 				if (supportsOAuth(resolved.provider)) {
@@ -159,59 +185,67 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 					resolved.provider as Parameters<typeof getModel>[0],
 					resolved.model as Parameters<typeof getModel>[1],
 				);
-				const context = { systemPrompt: "You are a helpful assistant.", messages: payload.messages };
-				const reasoning = resolved.reasoningEffort === "off" ? undefined : resolved.reasoningEffort;
-				const eventStream = streamSimple(model, context, {
-					apiKey,
-					reasoning,
+				const streamId = createStreamId();
+				let sessionId = payload.sessionId ?? "";
+
+				const session = await sendAgentPrompt({
+					sessionId: payload.sessionId,
+					provider: resolved.provider,
+					model: model.id,
+					thinkingLevel: resolved.reasoningEffort,
+					messages: payload.messages,
+					systemPrompt: payload.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+					onEvent: (event) => {
+						rpc.send.sendStreamEvent({ streamId, event });
+					},
+					onPermissionRequest: (request) => {
+						rpc.send.permissionRequest({
+							sessionId,
+							permissionId: request.permissionId,
+							description: request.description,
+							params: request.params,
+						});
+					},
 				});
 
-				const streamId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-				void (async () => {
-					try {
-						for await (const event of eventStream) {
-							rpc.send.sendStreamEvent({ streamId, event });
-						}
-					} catch (error) {
-						const fallback: AssistantMessage = {
-							role: "assistant",
-							content: [{ type: "text", text: error instanceof Error ? error.message : "Streaming failed." }],
-							api: `${resolved.provider}-responses`,
-							provider: resolved.provider,
-							model: resolved.model,
-							timestamp: Date.now(),
-							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-							stopReason: "error",
-							errorMessage: error instanceof Error ? error.message : "Streaming failed.",
-						};
-						rpc.send.sendStreamEvent({ streamId, event: { type: "error", reason: "error", error: fallback } });
-					}
-				})();
-
-				return { streamId } as SendPromptResponse;
+				sessionId = session.sessionId;
+				return { streamId, sessionId };
 			},
-			sendPromptAgentOs: async (payload) => {
-				const resolved = resolveSendDefaults(payload);
-
-				if (supportsOAuth(resolved.provider)) {
-					await refreshIfNeeded(resolved.provider);
-				}
-
-				const apiKey = resolveApiKey(resolved.provider);
-				if (!apiKey) {
-					throw new Error(getApiKeyMissingError(resolved.provider));
-				}
-
-				const session = await createAgentSession(resolved.provider, resolved.model);
-				const lastUserMsg = payload.messages.filter((m: Message): m is UserMessage => m.role === "user").pop();
-				const prompt = lastUserMsg ? extractUserText(lastUserMsg) : "";
-
-				void sendAgentPrompt(session, prompt, resolved.provider, resolved.model, (event) => {
-					rpc.send.sendStreamEvent({ streamId: session.streamId, event });
-				});
-
-				return { streamId: session.streamId } as SendPromptResponse;
+			cancelPrompt: async ({ sessionId }: { sessionId: string }): Promise<{ ok: boolean }> => {
+				await cancelAgentSession(sessionId);
+				return { ok: true };
+			},
+			respondPermission: async ({
+				sessionId,
+				permissionId,
+				reply,
+			}: {
+				sessionId: string;
+				permissionId: string;
+				reply: "once" | "always" | "reject";
+			}): Promise<{ ok: boolean }> => {
+				await respondPermission(sessionId, permissionId, reply);
+				return { ok: true };
+			},
+			setSessionModel: async ({
+				sessionId,
+				model,
+			}: {
+				sessionId: string;
+				model: string;
+			}): Promise<SessionMutationResponse> => {
+				const result = await setSessionModel(sessionId, model);
+				return { ok: result.ok, sessionId: result.sessionId };
+			},
+			setSessionThoughtLevel: async ({
+				sessionId,
+				level,
+			}: {
+				sessionId: string;
+				level: ReasoningEffort;
+			}): Promise<SessionMutationResponse> => {
+				const result = await setSessionThoughtLevel(sessionId, level);
+				return { ok: result.ok, sessionId: result.sessionId };
 			},
 			listProviderAuths: async (): Promise<ProviderAuthInfo[]> => {
 				const providers = getProviders();
@@ -225,11 +259,16 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 					};
 				});
 			},
-			setProviderApiKey: async (params: { providerId: string; apiKey: string }) => {
+			setProviderApiKey: async (params: {
+				providerId: string;
+				apiKey: string;
+			}): Promise<{ ok: boolean }> => {
 				storeApiKey(params.providerId, params.apiKey);
 				return { ok: true };
 			},
-			startOAuth: async (params: { providerId: string }) => {
+			startOAuth: async (params: {
+				providerId: string;
+			}): Promise<{ ok: boolean; error?: string }> => {
 				try {
 					await startOAuthLogin(params.providerId);
 					return { ok: true };
@@ -237,7 +276,9 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 					return { ok: false, error: err instanceof Error ? err.message : String(err) };
 				}
 			},
-			removeProviderAuth: async (params: { providerId: string }) => {
+			removeProviderAuth: async (params: {
+				providerId: string;
+			}): Promise<{ ok: boolean }> => {
 				removeCredential(params.providerId);
 				return { ok: true };
 			},
@@ -245,7 +286,7 @@ const rpc = defineElectrobunRPC<ChatRPCSchema>("bun", {
 	},
 });
 
-const appMenu = [
+const appMenu: Parameters<typeof ApplicationMenu.setApplicationMenu>[0] = [
 	{
 		label: "Electrobun Chat",
 		submenu: [
@@ -289,10 +330,16 @@ const url = await getMainViewUrl();
 
 const mainWindow = new BrowserWindow({
 	title: "Electrobun Chat",
+	frame: {
+		x: 0,
+		y: 0,
+		width: 960,
+		height: 760,
+	},
 	url,
-	width: 960,
-	height: 760,
 	rpc,
 });
+
+void mainWindow;
 
 console.log("Svelte + Pi Chat app started!");
