@@ -8,15 +8,45 @@ export interface SendPromptRequest {
 	provider?: string;
 	model?: string;
 	reasoningEffort?: ReasoningEffort;
+	sessionId?: string;
+	systemPrompt?: string;
 }
 
 export interface SendPromptResponse {
 	streamId: string;
+	sessionId: string;
+}
+
+export interface SetSessionModelRequest {
+	sessionId: string;
+	model: string;
+}
+
+export interface SetSessionThoughtLevelRequest {
+	sessionId: string;
+	level: ReasoningEffort;
 }
 
 export interface StreamEventMessage {
 	streamId: string;
 	event: AssistantMessageEvent;
+}
+
+export interface PermissionRequestMessage {
+	sessionId: string;
+	permissionId: string;
+	description?: string;
+	params: Record<string, unknown>;
+}
+
+export interface RespondPermissionRequest {
+	sessionId: string;
+	permissionId: string;
+	reply: "once" | "always" | "reject";
+}
+
+export interface CancelPromptRequest {
+	sessionId: string;
 }
 
 export interface AuthStateResponse {
@@ -37,23 +67,39 @@ export interface ChatRPCSchema {
 	bun: {
 		requests: {
 			getDefaults: {
+				params: undefined;
 				response: ChatDefaults;
 			};
 			getAuthState: {
+				params: undefined;
 				response: AuthStateResponse;
 			};
 			loginChatGPT: {
+				params: undefined;
 				response: AuthStateResponse;
 			};
 			sendPrompt: {
 				params: SendPromptRequest;
 				response: SendPromptResponse;
 			};
-			sendPromptAgentOs: {
-				params: SendPromptRequest;
-				response: SendPromptResponse;
+			setSessionModel: {
+				params: SetSessionModelRequest;
+				response: { ok: boolean; sessionId: string };
+			};
+			setSessionThoughtLevel: {
+				params: SetSessionThoughtLevelRequest;
+				response: { ok: boolean; sessionId: string };
+			};
+			cancelPrompt: {
+				params: CancelPromptRequest;
+				response: { ok: boolean };
+			};
+			respondPermission: {
+				params: RespondPermissionRequest;
+				response: { ok: boolean };
 			};
 			listProviderAuths: {
+				params: undefined;
 				response: ProviderAuthInfo[];
 			};
 			setProviderApiKey: {
@@ -69,12 +115,13 @@ export interface ChatRPCSchema {
 				response: { ok: boolean };
 			};
 		};
-		messages: {
-			sendStreamEvent: StreamEventMessage;
-		};
+		messages: Record<string, never>;
 	};
 	webview: {
 		requests: Record<string, never>;
-		messages: Record<string, never>;
+		messages: {
+			sendStreamEvent: StreamEventMessage;
+			permissionRequest: PermissionRequestMessage;
+		};
 	};
 }

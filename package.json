@@ -24,9 +24,9 @@
 		"@mariozechner/pi-agent-core": "^0.64.0",
 		"@mariozechner/pi-ai": "^0.64.0",
 		"@mariozechner/pi-web-ui": "^0.64.0",
-		"@rivet-dev/agent-os-common": "^0.0.260331072558",
-		"@rivet-dev/agent-os-core": "^0.1.0",
-		"@rivet-dev/agent-os-pi": "^0.1.0",
+		"@rivet-dev/agent-os-common": "https://codeload.github.com/0xpolarzero/agent-os/tar.gz/refs/tags/acai-agent-os-common-20260401.1",
+		"@rivet-dev/agent-os-core": "https://codeload.github.com/0xpolarzero/agent-os/tar.gz/refs/tags/acai-agent-os-core-20260401.1",
+		"@rivet-dev/agent-os-pi": "https://codeload.github.com/0xpolarzero/agent-os/tar.gz/refs/tags/acai-agent-os-pi-20260401.1",
 		"electrobun": "1.16.0",
 		"lit": "^3.3.1",
 		"rivetkit": "^2.2.0"
